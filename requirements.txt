@@ -1,1 +1,3 @@
 fastmcp
+mcp[cli]
+chromadb
