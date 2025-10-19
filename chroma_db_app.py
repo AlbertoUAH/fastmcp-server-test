@@ -9,8 +9,14 @@ COLLECTION_NAME = "company-docs"
 
 mcp = FastMCP("chromadb-server")
 
-def get_chroma_client():
-    return chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+_collection = None
+
+def get_chroma_collection():
+    global _collection
+    if _collection is None:
+        client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+        _collection = client.get_or_create_collection(name=COLLECTION_NAME)
+    return _collection
 
 @mcp.tool()
 def query_company_docs(query: str, n_results: int = 5) -> str:
@@ -21,8 +27,7 @@ def query_company_docs(query: str, n_results: int = 5) -> str:
         n_results: Number of results to return (default: 5)
     """
     try:
-        client = get_chroma_client()
-        collection = client.get_collection(name=COLLECTION_NAME)
+        collection = get_chroma_collection()
         
         results = collection.query(
             query_texts=[query],
@@ -59,8 +64,7 @@ def get_all_company_docs(limit: int = 100) -> str:
         limit: Maximum number of documents to return (default: 100)
     """
     try:
-        client = get_chroma_client()
-        collection = client.get_collection(name=COLLECTION_NAME)
+        collection = get_chroma_collection()
         
         results = collection.get(limit=limit)
         
@@ -90,8 +94,7 @@ def get_all_company_docs(limit: int = 100) -> str:
 def get_document_count() -> str:
     """Get the total number of documents in the company-docs collection"""
     try:
-        client = get_chroma_client()
-        collection = client.get_collection(name=COLLECTION_NAME)
+        collection = get_chroma_collection()
         count = collection.count()
         return f"Total documents in {COLLECTION_NAME}: {count}"
     except Exception as e:
