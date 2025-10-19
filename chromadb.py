@@ -2,22 +2,19 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 
 from mcp.server.fastmcp import FastMCP, Context
-
 import chromadb
-from chromadb.config import Settings
 
-# Intenta importar HttpClient si existe (0.5+); si no, fallback REST via Settings (0.4.x).
+# Try modern API (0.5.x) first; fallback to REST settings (0.4.x)
 try:
-    from chromadb import HttpClient, PersistentClient  # type: ignore
-    HAS_HTTPCLIENT = True
+    from chromadb import HttpClient  # 0.5.x
+    HAS_HTTP = True
 except Exception:
-    HttpClient = None  # type: ignore
-    PersistentClient = None  # type: ignore
-    HAS_HTTPCLIENT = False
+    HAS_HTTP = False
+    from chromadb.config import Settings  # 0.4.x
 
 COLLECTION_NAME = "company-docs"
 CHROMA_HOST = "18.201.177.111"
@@ -28,12 +25,10 @@ class AppCtx:
     client: Any
     collection: Any
 
-def build_chroma_client() -> Any:
-    if HAS_HTTPCLIENT and HttpClient is not None:
-        # Nuevo API (si disponible)
+def build_client():
+    if HAS_HTTP:
         return HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)  # type: ignore
-    # Fallback REST clásico
-    return chromadb.Client(Settings(
+    return chromadb.Client(Settings(  # type: ignore
         chroma_api_impl="rest",
         chroma_server_host=CHROMA_HOST,
         chroma_server_http_port=CHROMA_PORT,
@@ -41,7 +36,7 @@ def build_chroma_client() -> Any:
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
-    client = build_chroma_client()
+    client = build_client()
     collection = client.get_or_create_collection(COLLECTION_NAME)
     try:
         yield AppCtx(client=client, collection=collection)
