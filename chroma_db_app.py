@@ -1,79 +1,114 @@
-# chroma_mcp.py
-from __future__ import annotations
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
-from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
-
-from mcp.server.fastmcp import FastMCP, Context
+#!/usr/bin/env python3
+import asyncio
 import chromadb
+from mcp.server import Server
+from mcp.types import Tool, TextContent
+from mcp.server.stdio import stdio_server
 
-# Try modern API (0.5.x) first; fallback to REST settings (0.4.x)
-try:
-    from chromadb import HttpClient  # 0.5.x
-    HAS_HTTP = True
-except Exception:
-    HAS_HTTP = False
-    from chromadb.config import Settings  # 0.4.x
-
-COLLECTION_NAME = "company-docs"
 CHROMA_HOST = "18.201.177.111"
 CHROMA_PORT = 8000
+COLLECTION_NAME = "company-docs"
 
-@dataclass
-class AppCtx:
-    client: Any
-    collection: Any
+app = Server("chromadb-server")
 
-def build_client():
-    if HAS_HTTP:
-        return HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)  # type: ignore
-    return chromadb.Client(Settings(  # type: ignore
-        chroma_api_impl="rest",
-        chroma_server_host=CHROMA_HOST,
-        chroma_server_http_port=CHROMA_PORT,
-    ))
+def get_chroma_client():
+    return chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
 
-@asynccontextmanager
-async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
-    client = build_client()
-    collection = client.get_or_create_collection(COLLECTION_NAME)
+@app.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="query_company_docs",
+            description="Query the company-docs collection in ChromaDB",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The query text to search for"
+                    },
+                    "n_results": {
+                        "type": "integer",
+                        "description": "Number of results to return (default: 5)",
+                        "default": 5
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="get_all_company_docs",
+            description="Get all documents from the company-docs collection",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of documents to return",
+                        "default": 100
+                    }
+                }
+            }
+        )
+    ]
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
-        yield AppCtx(client=client, collection=collection)
-    finally:
-        pass
+        client = get_chroma_client()
+        collection = client.get_collection(name=COLLECTION_NAME)
+        
+        if name == "query_company_docs":
+            query = arguments["query"]
+            n_results = arguments.get("n_results", 5)
+            
+            results = collection.query(
+                query_texts=[query],
+                n_results=n_results
+            )
+            
+            response = f"Found {len(results['documents'][0])} results:\n\n"
+            for i, (doc, metadata, distance) in enumerate(zip(
+                results['documents'][0],
+                results['metadatas'][0],
+                results['distances'][0]
+            )):
+                response += f"Result {i+1} (distance: {distance:.4f}):\n"
+                response += f"Document: {doc}\n"
+                response += f"Metadata: {metadata}\n\n"
+            
+            return [TextContent(type="text", text=response)]
+        
+        elif name == "get_all_company_docs":
+            limit = arguments.get("limit", 100)
+            
+            results = collection.get(limit=limit)
+            
+            response = f"Retrieved {len(results['documents'])} documents:\n\n"
+            for i, (doc_id, doc, metadata) in enumerate(zip(
+                results['ids'],
+                results['documents'],
+                results['metadatas']
+            )):
+                response += f"Document {i+1} (ID: {doc_id}):\n"
+                response += f"Content: {doc}\n"
+                response += f"Metadata: {metadata}\n\n"
+            
+            return [TextContent(type="text", text=response)]
+        
+        else:
+            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-mcp = FastMCP("ChromaDB - company-docs", lifespan=lifespan)
-
-@mcp.tool(description="Lista elementos de la colección 'company-docs'.")
-def list_company_docs(
-    ctx: Context,
-    limit: int = 100,
-    offset: int = 0,
-    include: Optional[List[str]] = None,
-    where: Optional[Dict[str, Any]] = None,
-    where_document: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    app: AppCtx = ctx.request_context.lifespan_context
-    include = include or ["ids", "documents", "metadatas"]
-    res = app.collection.get(
-        include=include,
-        limit=limit,
-        offset=offset,
-        where=where,
-        where_document=where_document,
-    )
-    return {
-        "pagination": {"limit": limit, "offset": offset},
-        "count": len(res.get("ids", [])),
-        "include": include,
-        "data": res,
-    }
-
-@mcp.tool(description="Cuenta los elementos en la colección 'company-docs'.")
-def count_company_docs(ctx: Context) -> int:
-    app: AppCtx = ctx.request_context.lifespan_context
-    return int(app.collection.count())
+async def main():
+    async with stdio_server() as (read_stream, write_stream):
+        await app.run(
+            read_stream,
+            write_stream,
+            app.create_initialization_options()
+        )
 
 if __name__ == "__main__":
-    mcp.run()
+    asyncio.run(main())
